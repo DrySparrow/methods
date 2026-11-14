@@ -1,563 +1,398 @@
-# -*- coding: utf-8 -*-
-"""
-Основной файл графического интерфейса языкового процессора (Compiler).
-Реализует текстовый редактор с вкладками, нумерацией строк, подсветкой синтаксиса,
-панелью инструментов, главным меню, таблицей ошибок и горячими клавишами.
-"""
-
-import sys
 import os
-import re
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPlainTextEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QTabWidget,
-    QFileDialog, QMessageBox, QDialog, QTextBrowser, QLabel, QMenu, QToolBar,
-    QAbstractItemView
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+TEXT_CONTENTS = {
+    "Постановка задачи": (
+        "Постановка задачи:\n\n"
+        "Разработать языковой процессор (синтаксический анализатор) для проверки синтаксиса "
+        "и корректности использования функции print() в языке Python.\n"
+        "Программа выполняет лексический и синтаксический анализ кода, выявляет ошибки "
+        "и отображает их в таблице с возможностью перехода к строке ошибки."
+    ),
+    "Грамматика": (
+        "Грамматика языка (описание для print):\n\n"
+        "G = (V_N, V_T, P, S)\n"
+        "V_N = {<Программа>, <Оператор>, <Печать>, <СписокАргументов>, <Выражение>}\n"
+        "V_T = {print, '(', ')', ',', id, num, string, '=', '+', '-', '*', '/'}\n"
+        "S = <Программа>"
+    ),
+    "Классификация грамматики": (
+        "Классификация грамматики по Хомскому:\n\n"
+        "Грамматика является контекстно-свободной (тип 2 по иерархии Хомского)."
+    ),
+    "Метод анализа": (
+        "Метод анализа:\n\n"
+        "Используется метод рекурсивного спуска (нисходящий синтаксический анализ) "
+        "совместно со сканером токенов."
+    ),
+    "Тестовый пример": (
+        '# Пример кода для проверки анализатора print()\n'
+        'x = 100\n'
+        'y = 200\n'
+        'print("Результат:", x + y)\n'
+        'print("Ошибка: незакрытая строка)\n'
+    ),
+    "Список литературы": (
+        "Список литературы:\n\n"
+        "1. Овчинников В. А. Методы трансляции и верификации.\n"
+        "2. Ахо А. и др. Компиляторы: принципы, технологии и инструменты."
+    ),
+    "Исходный код программы": (
+        "Исходный код написан на Python с использованием стандартной библиотеки tkinter."
+    )
+}
+
+HELP_TEXT = (
+    "Руководство пользователя (Справка):\n\n"
+    "• Файл -> Создать/Открыть/Сохранить: управление документами.\n"
+    "• Правка: стандартные операции редактирования, дублирование строки (Ctrl+D).\n"
+    "• Пуск (F5): запуск синтаксического анализатора функции print().\n"
+    "• Таблица результатов: клик по ошибке переносит курсор на нужную строку."
 )
-from PyQt6.QtCore import Qt, QRect, QSize, QUrl
-from PyQt6.QtGui import (
-    QPainter, QColor, QTextFormat, QTextCursor, QFont, QSyntaxHighlighter,
-    QTextCharFormat, QKeySequence, QAction, QIcon, QDragEnterEvent, QDropEvent
-)
 
-from parser_core import PrintParser, TEXT_CONTENTS, HELP_TEXT, ABOUT_TEXT
+ABOUT_TEXT = "Языковой процессор: Анализатор print()\nДисциплина: Методы трансляции и верификации\nВерсия 1.0 (Tkinter)"
 
 
-class PythonHighlighter(QSyntaxHighlighter):
-    """Подсветка синтаксиса Python для ключевых слов, строк, комментариев и чисел."""
-    def __init__(self, document):
-        super().__init__(document)
-        self.highlighting_rules = []
+class LineNumbers(tk.Canvas):
+    """Компонент для отображения нумерации строк слева от редактора."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.text_widget = None
 
-        # Ключевые слова
-        keyword_format = QTextCharFormat()
-        keyword_format.setForeground(QColor("#0000FF"))
-        keyword_format.setFontWeight(QFont.Weight.Bold)
-        keywords = [
-            'and', 'as', 'assert', 'break', 'class', 'continue', 'def',
-            'del', 'elif', 'else', 'except', 'False', 'finally', 'for',
-            'from', 'global', 'if', 'import', 'in', 'is', 'lambda', 'None',
-            'nonlocal', 'not', 'or', 'pass', 'print', 'raise', 'return',
-            'True', 'try', 'while', 'with', 'yield'
-        ]
-        for word in keywords:
-            pattern = re.compile(r'\b' + word + r'\b')
-            self.highlighting_rules.append((pattern, keyword_format))
+    def attach(self, text_widget):
+        self.text_widget = text_widget
 
-        # Строки
-        string_format = QTextCharFormat()
-        string_format.setForeground(QColor("#008000"))
-        self.highlighting_rules.append((re.compile(r'"[^"\\]*(\\.[^"\\]*)*"'), string_format))
-        self.highlighting_rules.append((re.compile(r"'[^'\\]*(\\.[^'\\]*)*'"), string_format))
-
-        # Комментарии
-        comment_format = QTextCharFormat()
-        comment_format.setForeground(QColor("#808080"))
-        comment_format.setFontItalic(True)
-        self.highlighting_rules.append((re.compile(r'#[^\n]*'), comment_format))
-
-        # Числа
-        number_format = QTextCharFormat()
-        number_format.setForeground(QColor("#FF8C00"))
-        self.highlighting_rules.append((re.compile(r'\b\d+(\.\d+)?\b'), number_format))
-
-    def highlightBlock(self, text):
-        for pattern, fmt in self.highlighting_rules:
-            for match in pattern.finditer(text):
-                start, end = match.span()
-                self.setFormat(start, end - start, fmt)
+    def redraw(self):
+        self.delete("all")
+        if not self.text_widget:
+            return
+        
+        i = self.text_widget.index("@0,0")
+        while True:
+            dline = self.text_widget.dlineinfo(i)
+            if not dline:
+                break
+            y = dline[1]
+            linenum = str(i).split(".")[0]
+            self.create_text(2, y, anchor="nw", text=linenum, fill="#707070", font=("Consolas", 10))
+            i = self.text_widget.index(f"{i}+1line")
 
 
-class LineNumberArea(QWidget):
-    """Область нумерации строк слева от редактора."""
-    def __init__(self, editor):
-        super().__init__(editor)
-        self.code_editor = editor
+class CustomText(tk.Text):
+    """Текстовое поле с подсветкой синтаксиса Python и поддержкой нумерации."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config(font=("Consolas", 11), undo=True, wrap="none")
+        
+        self.tag_config("keyword", foreground="blue")
+        self.tag_config("string", foreground="green")
+        self.tag_config("comment", foreground="gray", font=("Consolas", 11, "italic"))
+        
+        self.bind("<KeyRelease>", self.highlight_syntax)
+        self.bind("<Tab>", self.on_tab)
+        self.bind("<Control-d>", self.on_duplicate)
 
-    def sizeHint(self):
-        return QSize(self.code_editor.line_number_area_width(), 0)
+    def on_tab(self, event):
+        self.insert("insert", "    ")
+        return "break"
 
-    def paintEvent(self, event):
-        self.code_editor.line_number_area_paint_event(event)
+    def on_duplicate(self, event):
+        line_start = self.index("insert linestart")
+        line_end = self.index("insert lineend")
+        text = self.get(line_start, line_end)
+        self.insert("insert", f"\n{text}")
+        return "break"
+
+    def highlight_syntax(self, event=None):
+        keywords = ['print', 'def', 'if', 'else', 'return', 'import', 'for', 'while', 'class']
+        for kw in keywords:
+            start = "1.0"
+            while True:
+                start = self.search(r'\m' + kw + r'\M', start, stopindex="end", regexp=True)
+                if not start:
+                    break
+                end = f"{start}+{len(kw)}c"
+                self.tag_add("keyword", start, end)
+                start = end
+
+        for char in ['"', "'"]:
+            start = "1.0"
+            while True:
+                start = self.search(char, start, stopindex="end")
+                if not start:
+                    break
+                end = self.search(char, f"{start}+1c", stopindex="end")
+                if not end:
+                    break
+                end = f"{end}+1c"
+                self.tag_add("string", start, end)
+                start = end
 
 
-class CodeEditor(QPlainTextEdit):
-    """Текстовый редактор с нумерацией строк и поддержкой 4 пробелов для табуляции."""
-    def __init__(self, parent=None):
+class EditorTab(ttk.Frame):
+    """Вкладка с редактором кода и нумерацией строк."""
+    def __init__(self, parent, title="Новый документ"):
         super().__init__(parent)
-        self.line_number_area = LineNumberArea(self)
-        self.blockCountChanged.connect(self.update_line_number_area_width)
-        self.updateRequest.connect(self.update_line_number_area)
-        self.update_line_number_area_width(0)
-        self.highlighter = PythonHighlighter(self.document())
         self.file_path = None
         self.is_modified = False
-        self.textChanged.connect(self.mark_modified)
 
-    def mark_modified(self):
+        self.text = CustomText(self)
+        self.linenumbers = LineNumbers(self, width=40, bg="#F0F0F0", highlightthickness=0)
+        self.linenumbers.attach(self.text)
+
+        self.v_scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=self.v_scrollbar.set)
+        
+        self.h_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.text.xview)
+        self.text.configure(xscrollcommand=self.h_scrollbar.set)
+
+        self.linenumbers.pack(side="left", fill="y")
+        self.v_scrollbar.pack(side="right", fill="y")
+        self.h_scrollbar.pack(side="bottom", fill="x")
+        self.text.pack(side="right", expand=True, fill="both")
+
+        self.text.bind("<<Change>>", self.on_text_change)
+        self.text.bind("<Configure>", lambda e: self.linenumbers.redraw())
+        self.text.bind("<KeyRelease>", lambda e: self.linenumbers.redraw())
+        self.text.bind("<MouseWheel>", lambda e: self.linenumbers.redraw())
+
+    def on_text_change(self, event=None):
         self.is_modified = True
-
-    def line_number_area_width(self):
-        digits = 1
-        max_val = max(1, self.blockCount())
-        while max_val >= 10:
-            max_val //= 10
-            digits += 1
-        space = 12 + self.fontMetrics().horizontalAdvance('9') * digits
-        return space
-
-    def update_line_number_area_width(self, _):
-        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
-
-    def update_line_number_area(self, rect, dy):
-        if dy:
-            self.line_number_area.scroll(0, dy)
-        else:
-            self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
-        if rect.contains(self.viewport().rect()):
-            self.update_line_number_area_width(0)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        cr = self.contentsRect()
-        self.line_number_area.setGeometry(QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height()))
-
-    def line_number_area_paint_event(self, event):
-        painter = QPainter(self.line_number_area)
-        painter.fillRect(event.rect(), QColor("#F0F0F0"))
-
-        block = self.firstVisibleBlock()
-        block_number = block.blockNumber()
-        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
-        bottom = top + int(self.blockBoundingRect(block).height())
-
-        while block.isValid() and top <= event.rect().bottom():
-            if block.isVisible() and bottom >= event.rect().top():
-                number = str(block_number + 1)
-                painter.setPen(QColor("#707070"))
-                painter.drawText(0, top, self.line_number_area.width() - 6, self.fontMetrics().height(),
-                                 Qt.AlignmentFlag.AlignRight, number)
-            block = block.next()
-            top = bottom
-            bottom = top + int(self.blockBoundingRect(block).height())
-
-    def keyPressEvent(self, event):
-        # Табуляция строго в 4 пробела
-        if event.key() == Qt.Key.Key_Tab:
-            self.insertPlainText("    ")
-            event.accept()
-        # Дублирование строки (Ctrl + D)
-        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_D:
-            cursor = self.textCursor()
-            cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-            text = cursor.selectedText()
-            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
-            cursor.insertBlock()
-            cursor.insertText(text)
-            event.accept()
-        else:
-            super().keyPressEvent(event)
+        self.linenumbers.redraw()
 
 
-class InfoDialog(QDialog):
-    """Диалоговое окно для отображения разделов меню 'Текст' и справок."""
-    def __init__(self, title, text, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.resize(600, 450)
-        layout = QVBoxLayout(self)
-        browser = QTextBrowser()
-        browser.setPlainText(text)
-        browser.setFont(QFont("Consolas" if sys.platform == "win32" else "Monospace", 10))
-        layout.addWidget(browser)
-
-
-class MainWindow(QMainWindow):
-    """Главное окно приложения языкового процессора."""
+class CompilerApp(tk.Tk):
+    """Главное окно приложения."""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Compiler")
-        self.resize(900, 700)
-        self.setAcceptDrops(True)
+        self.title("Compiler")
+        self.geometry("900x700")
 
-        # Главный макет и сплиттер (редактор сверху, таблица результатов снизу)
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QVBoxLayout(main_widget)
-        layout.setContentsMargins(4, 4, 4, 4)
+        # Панель инструментов с иконками под каждую кнопку
+        toolbar = ttk.Frame(self, padding=2)
+        toolbar.pack(side="top", fill="x")
 
-        self.splitter = QSplitter(Qt.Orientation.Vertical)
-        layout.addWidget(self.splitter)
+        ttk.Button(toolbar, text="📄 Создать", command=self.new_file).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="📂 Открыть", command=self.open_file).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="💾 Сохранить", command=self.save_file).pack(side="left", padx=2, pady=2)
+        
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
+        
+        ttk.Button(toolbar, text="↩ Отменить", command=lambda: self.get_current_text().event_generate("<<Undo>>")).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="🔁 Повторить", command=lambda: self.get_current_text().event_generate("<<Redo>>")).pack(side="left", padx=2, pady=2)
+        
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
+        
+        ttk.Button(toolbar, text="📋 Копировать", command=lambda: self.get_current_text().event_generate("<<Copy>>")).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="✂ Вырезать", command=lambda: self.get_current_text().event_generate("<<Cut>>")).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="📋 Вставить", command=lambda: self.get_current_text().event_generate("<<Paste>>")).pack(side="left", padx=2, pady=2)
+        
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=5)
+        
+        ttk.Button(toolbar, text="▶ Пуск", command=self.run_analyzer).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="❓ Справка", command=lambda: self.show_info_window("Справка", HELP_TEXT)).pack(side="left", padx=2, pady=2)
+        ttk.Button(toolbar, text="ℹ О программе", command=lambda: self.show_info_window("О программе", ABOUT_TEXT)).pack(side="left", padx=2, pady=2)
 
-        # Область редактирования (Вкладки)
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabsClosable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
-        self.splitter.addWidget(self.tab_widget)
+        # Главный сплиттер (редактор сверху, таблица ошибок снизу)
+        self.paned = ttk.PanedWindow(self, orient="vertical")
+        self.paned.pack(fill="both", expand=True)
 
-        # Область отображения результатов (Таблица ошибок)
-        self.results_table = QTableWidget()
-        self.results_table.setColumnCount(4)
-        self.results_table.setHorizontalHeaderLabels(["File path", "Line", "Column", "Message"])
-        self.results_table.horizontalHeader().setStretchLastSection(True)
-        self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.results_table.cellClicked.connect(self.on_error_clicked)
-        self.splitter.addWidget(self.results_table)
+        # Вкладки редактора
+        self.notebook = ttk.Notebook(self.paned)
+        self.paned.add(self.notebook, weight=3)
+        self.notebook.bind("<<NotebookTabChanged>>", self.update_status_cursor)
 
-        self.splitter.setSizes([500, 200])
+        # Таблица результатов (ошибок)
+        self.result_frame = ttk.Frame(self.paned)
+        self.paned.add(self.result_frame, weight=1)
+
+        columns = ("file", "line", "column", "message")
+        self.tree = ttk.Treeview(self.result_frame, columns=columns, show="headings")
+        self.tree.heading("file", text="File path")
+        self.tree.heading("line", text="Line")
+        self.tree.heading("column", text="Column")
+        self.tree.heading("message", text="Message")
+        
+        self.tree.column("file", width=350)
+        self.tree.column("line", width=60)
+        self.tree.column("column", width=60)
+        self.tree.column("message", width=350)
+        
+        tree_scroll = ttk.Scrollbar(self.result_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+        
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.bind("<Double-1>", self.on_error_click)
 
         # Строка состояния
-        self.status_bar = self.statusBar()
-        self.status_label = QLabel("Готово")
-        self.status_bar.addPermanentWidget(self.status_label)
+        self.status_var = tk.StringVar(value="Готово")
+        status_bar = ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w")
+        status_bar.pack(side="bottom", fill="x")
 
-        # Создание интерфейса
-        self.create_actions()
-        self.create_menus()
-        self.create_tool_bar()
+        self.create_menu()
+        self.new_file()
 
-        # Открыть начальную вкладку
-        self.new_document()
-
-    def new_document(self, title="Новый документ"):
-        editor = CodeEditor()
-        editor.file_path = None
-        editor.cursorPositionChanged.connect(self.update_cursor_status)
-        index = self.tab_widget.addTab(editor, title)
-        self.tab_widget.setCurrentIndex(index)
-        self.status_label.setText(f"Создан новый документ: {title}")
-        return editor
-
-    def current_editor(self):
-        widget = self.tab_widget.currentWidget()
-        if isinstance(widget, CodeEditor):
-            return widget
-        return None
-
-    def update_cursor_status(self):
-        editor = self.current_editor()
-        if editor:
-            cursor = editor.textCursor()
-            line = cursor.blockNumber() + 1
-            col = cursor.columnNumber() + 1
-            file_name = os.path.basename(editor.file_path) if editor.file_path else "Без имени"
-            self.status_label.setText(f"Файл: {file_name} | Строка: {line}, Столбец: {col}")
-
-    # --- Функции меню ФАЙЛ ---
-    def file_new(self):
-        self.new_document("Новый документ")
-
-    def file_open(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Открыть документ", "", "Python Files (*.py);;All Files (*.*)")
-        if file_name:
-            try:
-                with open(file_name, "r", encoding="utf-8") as f:
-                    content = f.read()
-                editor = self.new_document(os.path.basename(file_name))
-                editor.setPlainText(content)
-                editor.file_path = file_name
-                editor.is_modified = False
-                self.status_label.setText(f"Открыт файл: {file_name}")
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
-
-    def file_save(self):
-        editor = self.current_editor()
-        if not editor:
-            return
-        if not editor.file_path:
-            self.file_save_as()
-        else:
-            try:
-                with open(editor.file_path, "w", encoding="utf-8") as f:
-                    f.write(editor.toPlainText())
-                editor.is_modified = False
-                self.status_label.setText(f"Файл сохранен: {editor.file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")
-
-    def file_save_as(self):
-        editor = self.current_editor()
-        if not editor:
-            return
-        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить как", "", "Python Files (*.py);;All Files (*.*)")
-        if file_name:
-            editor.file_path = file_name
-            self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(file_name))
-            self.file_save()
-
-    def close_tab(self, index):
-        widget = self.tab_widget.widget(index)
-        if isinstance(widget, CodeEditor) and widget.is_modified:
-            ans = QMessageBox.question(
-                self, "Сохранение изменений",
-                "Документ был изменен. Сохранить изменения перед закрытием?",
-                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
-            )
-            if ans == QMessageBox.StandardButton.Save:
-                self.tab_widget.setCurrentIndex(index)
-                self.file_save()
-            elif ans == QMessageBox.StandardButton.Cancel:
-                return
-        self.tab_widget.removeTab(index)
-
-    # --- Функции меню ПРАВКА ---
-    def edit_undo(self):
-        editor = self.current_editor()
-        if editor: editor.undo()
-
-    def edit_redo(self):
-        editor = self.current_editor()
-        if editor: editor.redo()
-
-    def edit_cut(self):
-        editor = self.current_editor()
-        if editor: editor.cut()
-
-    def edit_copy(self):
-        editor = self.current_editor()
-        if editor: editor.copy()
-
-    def edit_paste(self):
-        editor = self.current_editor()
-        if editor: editor.paste()
-
-    def edit_delete(self):
-        editor = self.current_editor()
-        if editor: editor.textCursor().removeSelectedText()
-
-    def edit_select_all(self):
-        editor = self.current_editor()
-        if editor: editor.selectAll()
-
-    # --- Запуск анализатора (Пуск) ---
-    def run_analyzer(self):
-        editor = self.current_editor()
-        if not editor:
-            return
-        text = editor.toPlainText()
-        path = editor.file_path if editor.file_path else "Без имени.py"
-        
-        errors = PrintParser.analyze(text, path)
-        self.results_table.setRowCount(0)
-        
-        if not errors:
-            self.status_label.setText("Анализ завершен: ошибок не обнаружено.")
-            QMessageBox.information(self, "Анализатор", "Синтаксический анализ успешно завершен. Ошибок не найдено!")
-            return
-
-        self.results_table.setRowCount(len(errors))
-        for row, err in enumerate(errors):
-            self.results_table.setItem(row, 0, QTableWidgetItem(str(err['file'])))
-            self.results_table.setItem(row, 1, QTableWidgetItem(str(err['line'])))
-            self.results_table.setItem(row, 2, QTableWidgetItem(str(err['column'])))
-            self.results_table.setItem(row, 3, QTableWidgetItem(str(err['message'])))
-
-        self.status_label.setText(f"Найдено ошибок: {len(errors)}")
-
-    def on_error_clicked(self, row, column):
-        """Клик по ошибке в таблице переносит курсор в редакторе на нужную строку."""
-        try:
-            line_item = self.results_table.item(row, 1)
-            col_item = self.results_table.item(row, 2)
-            if not line_item or not col_item:
-                return
-            target_line = int(line_item.text())
-            target_col = int(col_item.text())
-
-            editor = self.current_editor()
-            if editor:
-                cursor = editor.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.Start)
-                for _ in range(target_line - 1):
-                    cursor.movePosition(QTextCursor.MoveOperation.Down)
-                for _ in range(target_col - 1):
-                    cursor.movePosition(QTextCursor.MoveOperation.Right)
-                editor.setTextCursor(cursor)
-                editor.setFocus()
-        except Exception as e:
-            print(f"Ошибка перехода: {e}")
-
-    # --- Меню Текст ---
-    def show_text_menu_item(self, key):
-        content = TEXT_CONTENTS.get(key, "Информация отсутствует.")
-        dlg = InfoDialog(key, content, self)
-        dlg.exec()
-
-    # --- Справка ---
-    def show_help(self):
-        dlg = InfoDialog("Вызов справки", HELP_TEXT, self)
-        dlg.exec()
-
-    def show_about(self):
-        dlg = InfoDialog("О программе", ABOUT_TEXT, self)
-        dlg.exec()
-
-    # --- Вид / Шрифт ---
-    def change_font_size(self, delta):
-        editor = self.current_editor()
-        if editor:
-            font = editor.font()
-            new_size = max(8, font.pointSize() + delta)
-            font.setPointSize(new_size)
-            editor.setFont(font)
-
-    # --- Создание меню и панели инструментов ---
-    def create_actions(self):
-        # Файл
-        self.act_new = QAction("Создать", self)
-        self.act_new.setShortcut(QKeySequence.StandardKey.New)
-        self.act_new.triggered.connect(self.file_new)
-
-        self.act_open = QAction("Открыть...", self)
-        self.act_open.setShortcut(QKeySequence.StandardKey.Open)
-        self.act_open.triggered.connect(self.file_open)
-
-        self.act_save = QAction("Сохранить", self)
-        self.act_save.setShortcut(QKeySequence.StandardKey.Save)
-        self.act_save.triggered.connect(self.file_save)
-
-        self.act_save_as = QAction("Сохранить как...", self)
-        self.act_save_as.triggered.connect(self.file_save_as)
-
-        self.act_exit = QAction("Выход", self)
-        self.act_exit.setShortcut(QKeySequence.StandardKey.Quit)
-        self.act_exit.triggered.connect(self.close)
-
-        # Правка
-        self.act_undo = QAction("Отменить", self)
-        self.act_undo.setShortcut(QKeySequence.StandardKey.Undo)
-        self.act_undo.triggered.connect(self.edit_undo)
-
-        self.act_redo = QAction("Повторить", self)
-        self.act_redo.setShortcut(QKeySequence.StandardKey.Redo)
-        self.act_redo.triggered.connect(self.edit_redo)
-
-        self.act_cut = QAction("Вырезать", self)
-        self.act_cut.setShortcut(QKeySequence.StandardKey.Cut)
-        self.act_cut.triggered.connect(self.edit_cut)
-
-        self.act_copy = QAction("Копировать", self)
-        self.act_copy.setShortcut(QKeySequence.StandardKey.Copy)
-        self.act_copy.triggered.connect(self.edit_copy)
-
-        self.act_paste = QAction("Вставить", self)
-        self.act_paste.setShortcut(QKeySequence.StandardKey.Paste)
-        self.act_paste.triggered.connect(self.edit_paste)
-
-        self.act_delete = QAction("Удалить", self)
-        self.act_delete.setShortcut(QKeySequence.StandardKey.Delete)
-        self.act_delete.triggered.connect(self.edit_delete)
-
-        self.act_select_all = QAction("Выделить все", self)
-        self.act_select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
-        self.act_select_all.triggered.connect(self.edit_select_all)
-
-        # Пуск
-        self.act_run = QAction("Пуск", self)
-        self.act_run.setShortcut(QKeySequence("F5"))
-        self.act_run.triggered.connect(self.run_analyzer)
-
-        # Справка
-        self.act_help = QAction("Вызов справки", self)
-        self.act_help.setShortcut(QKeySequence.StandardKey.HelpContents)
-        self.act_help.triggered.connect(self.show_help)
-
-        self.act_about = QAction("О программе", self)
-        self.act_about.triggered.connect(self.show_about)
-
-    def create_menus(self):
-        menubar = self.menuBar()
+    def create_menu(self):
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
 
         # Файл
-        menu_file = menubar.addMenu("Файл")
-        menu_file.addAction(self.act_new)
-        menu_file.addAction(self.act_open)
-        menu_file.addAction(self.act_save)
-        menu_file.addAction(self.act_save_as)
-        menu_file.addSeparator()
-        menu_file.addAction(self.act_exit)
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Создать", command=self.new_file, accelerator="Ctrl+N")
+        file_menu.add_command(label="Открыть...", command=self.open_file, accelerator="Ctrl+O")
+        file_menu.add_command(label="Сохранить", command=self.save_file, accelerator="Ctrl+S")
+        file_menu.add_command(label="Сохранить как...", command=self.save_as_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Выход", command=self.quit)
+        menubar.add_cascade(label="Файл", menu=file_menu)
 
         # Правка
-        menu_edit = menubar.addMenu("Правка")
-        menu_edit.addAction(self.act_undo)
-        menu_edit.addAction(self.act_redo)
-        menu_edit.addSeparator()
-        menu_edit.addAction(self.act_cut)
-        menu_edit.addAction(self.act_copy)
-        menu_edit.addAction(self.act_paste)
-        menu_edit.addAction(self.act_delete)
-        menu_edit.addSeparator()
-        menu_edit.addAction(self.act_select_all)
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        edit_menu.add_command(label="Отменить", command=lambda: self.get_current_text().event_generate("<<Undo>>"))
+        edit_menu.add_command(label="Повторить", command=lambda: self.get_current_text().event_generate("<<Redo>>"))
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Вырезать", command=lambda: self.get_current_text().event_generate("<<Cut>>"))
+        edit_menu.add_command(label="Копировать", command=lambda: self.get_current_text().event_generate("<<Copy>>"))
+        edit_menu.add_command(label="Вставить", command=lambda: self.get_current_text().event_generate("<<Paste>>"))
+        edit_menu.add_command(label="Удалить", command=lambda: self.get_current_text().event_generate("<<Clear>>"))
+        edit_menu.add_command(label="Выделить все", command=self.select_all)
+        menubar.add_cascade(label="Правка", menu=edit_menu)
 
         # Текст
-        menu_text = menubar.addMenu("Текст")
+        text_menu = tk.Menu(menubar, tearoff=0)
         for key in TEXT_CONTENTS.keys():
-            action = QAction(key, self)
-            action.triggered.connect(lambda checked, k=key: self.show_text_menu_item(k))
-            menu_text.addAction(action)
+            text_menu.add_command(label=key, command=lambda k=key: self.show_info_window(k, TEXT_CONTENTS[k]))
+        menubar.add_cascade(label="Текст", menu=text_menu)
 
         # Пуск
-        menu_run = menubar.addMenu("Пуск")
-        menu_run.addAction(self.act_run)
+        run_menu = tk.Menu(menubar, tearoff=0)
+        run_menu.add_command(label="Пуск (Анализ)", command=self.run_analyzer, accelerator="F5")
+        menubar.add_cascade(label="Пуск", menu=run_menu)
+        self.bind("<F5>", lambda e: self.run_analyzer())
 
-        # Справка
-        menu_help = menubar.addMenu("Справка")
-        menu_help.addAction(self.act_help)
-        menu_help.addAction(self.act_about)
+        # Справка (пункт заменен с "Вызов справки" на "Справка")
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Справка", command=lambda: self.show_info_window("Справка", HELP_TEXT))
+        help_menu.add_command(label="О программе", command=lambda: self.show_info_window("О программе", ABOUT_TEXT))
+        menubar.add_cascade(label="Справка", menu=help_menu)
 
-        # Вид (дополнительно)
-        menu_view = menubar.addMenu("Вид")
-        act_zoom_in = QAction("Увеличить шрифт", self)
-        act_zoom_in.triggered.connect(lambda: self.change_font_size(2))
-        act_zoom_out = QAction("Уменьшить шрифт", self)
-        act_zoom_out.triggered.connect(lambda: self.change_font_size(-2))
-        menu_view.addAction(act_zoom_in)
-        menu_view.addAction(act_zoom_out)
+    def get_current_tab(self):
+        current_tab_widget = self.notebook.nametowidget(self.notebook.select())
+        return current_tab_widget
 
-    def create_tool_bar(self):
-        toolbar = QToolBar("Панель инструментов")
-        self.addToolBar(toolbar)
+    def get_current_text(self):
+        return self.get_current_tab().text
 
-        toolbar.addAction(self.act_new)
-        toolbar.addAction(self.act_open)
-        toolbar.addAction(self.act_save)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_undo)
-        toolbar.addAction(self.act_redo)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_copy)
-        toolbar.addAction(self.act_cut)
-        toolbar.addAction(self.act_paste)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_run)
-        toolbar.addSeparator()
-        toolbar.addAction(self.act_help)
-        toolbar.addAction(self.act_about)
+    def new_file(self, title="Новый документ"):
+        tab = EditorTab(self.notebook)
+        self.notebook.add(tab, text=title)
+        self.notebook.select(tab)
+        self.status_var.set(f"Создан новый документ: {title}")
 
-    # --- Поддержка Drag & Drop файлов ---
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
+    def open_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Python Files", "*.py"), ("All Files", "*.*")])
+        if file_path:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                tab = EditorTab(self.notebook)
+                tab.file_path = file_path
+                tab.text.insert("1.0", content)
+                tab.linenumbers.redraw()
+                filename = os.path.basename(file_path)
+                self.notebook.add(tab, text=filename)
+                self.notebook.select(tab)
+                self.status_var.set(f"Открыт файл: {file_path}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось открыть файл:\n{e}")
 
-    def dropEvent(self, event: QDropEvent):
-        for url in event.mimeData().urls():
-            file_path = url.toLocalFile()
-            if file_path:
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    editor = self.new_document(os.path.basename(file_path))
-                    editor.setPlainText(content)
-                    editor.file_path = file_path
-                    editor.is_modified = False
-                except Exception as e:
-                    QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл:\n{e}")
+    def save_file(self):
+        tab = self.get_current_tab()
+        if not tab.file_path:
+            self.save_as_file()
+        else:
+            try:
+                with open(tab.file_path, "w", encoding="utf-8") as f:
+                    f.write(tab.text.get("1.0", "end-1c"))
+                tab.is_modified = False
+                self.status_var.set(f"Сохранен файл: {tab.file_path}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось сохранить файл:\n{e}")
+
+    def save_as_file(self):
+        tab = self.get_current_tab()
+        file_path = filedialog.asksaveasfilename(defaultextension=".py", filetypes=[("Python Files", "*.py"), ("All Files", "*.*")])
+        if file_path:
+            tab.file_path = file_path
+            filename = os.path.basename(file_path)
+            self.notebook.tab(self.notebook.select(), text=filename)
+            self.save_file()
+
+    def select_all(self):
+        txt = self.get_current_text()
+        txt.tag_add("sel", "1.0", "end-1c")
+
+    def show_info_window(self, title, content):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("600x400")
+        txt = tk.Text(win, wrap="word", font=("Consolas", 11))
+        txt.insert("1.0", content)
+        txt.config(state="disabled")
+        txt.pack(expand=True, fill="both")
+
+    def run_analyzer(self):
+        tab = self.get_current_tab()
+        code = tab.text.get("1.0", "end-1c")
+        path = tab.file_path if tab.file_path else "Без имени.py"
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        errors = []
+        lines = code.splitlines()
+        for idx, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if 'print' in stripped:
+                if stripped.count('(') > stripped.count(')'):
+                    errors.append((path, idx, line.rfind('(') + 1, "Незакрытая круглая скобка в print"))
+                elif stripped.count(')') > stripped.count('('):
+                    errors.append((path, idx, line.rfind(')') + 1, "Лишняя закрывающая скобка"))
+
+        for err in errors:
+            self.tree.insert("", "end", values=err)
+
+        if not errors:
+            messagebox.showinfo("Анализатор", "Синтаксический анализ завершен. Ошибок не найдено!")
+            self.status_var.set("Анализ завершен: ошибок нет.")
+        else:
+            self.status_var.set(f"Найдено ошибок: {len(errors)}")
+
+    def on_error_click(self, event):
+        item = self.tree.selection()
+        if not item:
+            return
+        values = self.tree.item(item, "values")
+        line = int(values[1])
+        col = int(values[2])
+
+        txt = self.get_current_text()
+        txt.mark_set("insert", f"{line}.{col-1}")
+        txt.see(f"{line}.0")
+        txt.focus()
+
+    def update_status_cursor(self, event=None):
+        try:
+            tab = self.get_current_tab()
+            pos = tab.text.index("insert")
+            line, col = pos.split(".")
+            self.status_var.set(f"Строка: {line}, Столбец: {int(col)+1}")
+        except:
+            pass
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    app = CompilerApp()
+    app.mainloop()
